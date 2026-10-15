@@ -1,0 +1,19 @@
+﻿# Build output
+[Bb]in/
+[Oo]bj/
+
+# IDE and user-specific files
+.vs/
+.idea/
+*.user
+*.suo
+
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+**/secrets.json
+
+# Test and coverage output
+TestResults/
+coverage/

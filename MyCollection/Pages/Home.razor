@@ -1,0 +1,354 @@
+@page "/"
+@using MyCollection.Models
+@using MyCollection.Services
+@inject CollectorApiClient Api
+
+<PageTitle>Console Index — Game Console Collector</PageTitle>
+
+<div class="app-shell">
+    <header class="topbar">
+        <a class="brand" href="/" aria-label="Console Index home">
+            <span class="brand-mark">CI</span>
+            <span>CONSOLE<span class="brand-light">INDEX</span><small>PERSONAL GAME DATABASE</small></span>
+        </a>
+        <div class="topbar-right">
+            <span class="local-indicator"><i></i> LOCAL SESSION</span>
+            <button class="settings-link" @onclick="ToggleCredentials">@(credentialsOpen ? "Close settings" : "API settings") <span>↗</span></button>
+        </div>
+    </header>
+
+    <main>
+        <section class="hero">
+            <div class="eyebrow"><span>01</span> ADVANCED QUERY BUILDER</div>
+            <h1>Find games by<br /><em>where they play.</em></h1>
+            <p class="hero-copy">Combine platforms to discover the games you want. Exclude any system to filter out every game that has a release for it.</p>
+        </section>
+
+        @if (credentialsOpen)
+        {
+            <section class="credentials-panel">
+                <div class="panel-heading">
+                    <div><div class="eyebrow">LOCAL CREDENTIALS</div><h2>Connect your IGDB account</h2></div>
+                    <button class="icon-button" @onclick="ToggleCredentials" aria-label="Close">×</button>
+                </div>
+                <p class="helper">Your Twitch app credentials are saved on this computer and used only by the local API. Create an app in the Twitch Developer Console and use its Client ID and Client Secret.</p>
+                <div class="credential-fields">
+                    <label>CLIENT ID<input @bind="clientId" autocomplete="off" placeholder="Your Twitch Client ID" /></label>
+                    <label>CLIENT SECRET<input @bind="clientSecret" type="password" autocomplete="new-password" placeholder="Your Twitch Client Secret" /></label>
+                </div>
+                <div class="credential-actions">
+                    <button class="primary-button small" @onclick="SaveCredentials" disabled="@busy">Save credentials</button>
+                    @if (configured) { <button class="text-button danger-text" @onclick="ForgetCredentials">Remove saved credentials</button> }
+                    @if (!string.IsNullOrWhiteSpace(settingsMessage)) { <span class="inline-message">@settingsMessage</span> }
+                </div>
+            </section>
+        }
+
+        <section class="query-panel">
+            <div class="query-title-row">
+                <div class="panel-heading">
+                    <span class="section-icon">⌕</span>
+                    <div><div class="eyebrow">BUILD YOUR SEARCH</div><h2>Platform rules</h2></div>
+                </div>
+                <span class="rule-count">@(includeIds.Count + excludeIds.Count) RULES ACTIVE</span>
+            </div>
+
+            <div class="filter-columns">
+                <div class="filter-card include-card">
+                    <div class="filter-card-head">
+                        <div><span class="rule-label include-label">INCLUDE</span><h3>Available on</h3><p>Games must be released on at least one selected platform.</p></div>
+                        <span class="counter">@includeIds.Count.ToString("00")</span>
+                    </div>
+                    <div class="platform-search"><span>⌕</span><input @bind="includeSearch" placeholder="Find a platform..." aria-label="Find platform to include" /></div>
+                    <div class="platform-list">
+                        @foreach (var platform in FilterPlatforms(includeSearch))
+                        {
+                            var selected = includeIds.Contains(platform.Id);
+                            <button class="platform-option @(selected ? "selected" : "")" @onclick="() => ToggleInclude(platform.Id)" aria-pressed="@selected">
+                                <span class="platform-check">@(selected ? "✓" : "")</span><span class="platform-name">@platform.Name</span>
+                                @if (!string.IsNullOrWhiteSpace(platform.Abbreviation)) { <span class="platform-abbr">@platform.Abbreviation</span> }
+                            </button>
+                        }
+                        @if (FilterPlatforms(includeSearch).Count == 0) { <div class="empty-filter">@(platforms.Count == 0 ? "Configure API credentials to load IGDB platforms." : "No matching platform.")</div> }
+                    </div>
+                    @if (SelectedPlatforms(includeIds).Count > 0)
+                    {
+                        <div class="selected-chips">@foreach (var platform in SelectedPlatforms(includeIds)) { <button class="chip include-chip" @onclick="() => ToggleInclude(platform.Id)">@platform.Name <span>×</span></button> }</div>
+                    }
+                </div>
+
+                <div class="filter-divider"><span>AND</span></div>
+
+                <div class="filter-card exclude-card">
+                    <div class="filter-card-head">
+                        <div><span class="rule-label exclude-label">EXCLUDE</span><h3>Never on</h3><p>Games are removed if they have any selected platform.</p></div>
+                        <span class="counter">@excludeIds.Count.ToString("00")</span>
+                    </div>
+                    <div class="platform-search"><span>⌕</span><input @bind="excludeSearch" placeholder="Find a platform..." aria-label="Find platform to exclude" /></div>
+                    <div class="platform-list">
+                        @foreach (var platform in FilterPlatforms(excludeSearch))
+                        {
+                            var selected = excludeIds.Contains(platform.Id);
+                            <button class="platform-option @(selected ? "selected excluded" : "")" @onclick="() => ToggleExclude(platform.Id)" aria-pressed="@selected">
+                                <span class="platform-check">@(selected ? "✓" : "")</span><span class="platform-name">@platform.Name</span>
+                                @if (!string.IsNullOrWhiteSpace(platform.Abbreviation)) { <span class="platform-abbr">@platform.Abbreviation</span> }
+                            </button>
+                        }
+                        @if (FilterPlatforms(excludeSearch).Count == 0) { <div class="empty-filter">@(platforms.Count == 0 ? "Configure API credentials to load IGDB platforms." : "No matching platform.")</div> }
+                    </div>
+                    @if (SelectedPlatforms(excludeIds).Count > 0)
+                    {
+                        <div class="selected-chips">@foreach (var platform in SelectedPlatforms(excludeIds)) { <button class="chip exclude-chip" @onclick="() => ToggleExclude(platform.Id)">@platform.Name <span>×</span></button> }</div>
+                    }
+                </div>
+            </div>
+
+            <div class="query-footer">
+                <div class="query-note"><span class="note-icon">i</span><span>Exclusions apply to each game individually. Other platforms are allowed and shown in the results.</span></div>
+                <button class="primary-button" @onclick="Search" disabled="@(busy || !configured || includeIds.Count == 0)">
+                    @if (busy) { <span class="spinner"></span><span>Searching...</span> } else { <span>Search IGDB</span><span class="button-arrow">→</span> }
+                </button>
+            </div>
+            @if (string.IsNullOrWhiteSpace(errorMessage) == false) { <div class="error-banner">@errorMessage</div> }
+            @if (!configured) { <div class="setup-hint">Add your Twitch / IGDB credentials in <button class="inline-link" @onclick="ToggleCredentials">API settings</button> to search.</div> }
+        </section>
+
+        <section class="results-section">
+            <div class="results-header">
+                <div><div class="eyebrow">MATCHING GAMES</div><h2>Results <span class="results-count">@results.Count</span></h2></div>
+                <span class="results-meta">@if (hasSearched) { <span>UP TO 500 RESULTS · IGDB</span> } else { <span>READY WHEN YOU ARE</span> }</span>
+            </div>
+            @if (!hasSearched && !busy)
+            {
+                <div class="empty-results"><div class="empty-art">⌕</div><strong>Your search results will appear here</strong><span>Select platforms above, then search IGDB.</span></div>
+            }
+            else if (hasSearched && results.Count == 0 && !busy)
+            {
+                <div class="empty-results"><div class="empty-art">○</div><strong>No games found for these rules</strong><span>Try including another platform or removing an exclusion.</span></div>
+            }
+            else if (results.Count > 0)
+            {
+                <div class="result-table-wrap"><table class="result-table"><thead><tr><th>GAME TITLE</th><th>AVAILABLE PLATFORMS</th><th>ID</th><th></th></tr></thead><tbody>
+                    @foreach (var game in results)
+                    {
+                        var alreadySaved = collectionById.ContainsKey(game.Id);
+                        <tr><td class="game-title">@game.Name</td><td><div class="result-platforms">@foreach (var platform in game.Platforms) { <span class="result-platform">@platform.Name</span> }</div></td><td class="game-id">@game.Id</td><td><button class="collection-action" @onclick="() => AddToCollection(game)" disabled="@(alreadySaved || busy)">@(alreadySaved ? "In collection" : "＋ Add")</button></td></tr>
+                    }
+                </tbody></table></div>
+            }
+            <div class="pagination-note">IGDB returns up to 500 matches per search.</div>
+        </section>
+
+        <section class="collection-section">
+            <div class="results-header">
+                <div><div class="eyebrow">YOUR LOCAL LIBRARY</div><h2>My collection <span class="results-count">@collectionGames.Count</span></h2></div>
+                <span class="results-meta">SAVED ON THIS COMPUTER</span>
+            </div>
+            <div class="collection-toolbar">
+                <input class="collection-search" @bind="collectionSearch" placeholder="Find a saved game..." aria-label="Search your collection" />
+                <select class="collection-filter" @bind="collectionStatusFilter" aria-label="Filter collection by status">
+                    <option value="">All statuses</option><option value="Wanted">Want to have</option><option value="Owned">Owned</option>
+                </select>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(collectionMessage)) { <div class="collection-message">@collectionMessage</div> }
+            @if (VisibleCollection.Count == 0)
+            {
+                <div class="empty-results collection-empty"><div class="empty-art">◎</div><strong>@(collectionGames.Count == 0 ? "Your collection is empty" : "No games match this filter")</strong><span>Add games from your search results to start your personal list.</span></div>
+            }
+            else
+            {
+                <div class="collection-list">
+                    @foreach (var game in VisibleCollection)
+                    {
+                        var edit = collectionEdits[game.Id];
+                        <article class="collection-card">
+                            <div class="collection-card-title"><div><h3>@game.Name</h3><span class="game-id">IGDB @game.Id · Added @game.AddedAt.ToLocalTime().ToString("d")</span></div><button class="text-button danger-text" @onclick="() => RemoveFromCollection(game.Id)" disabled="@busy">Remove</button></div>
+                            <div class="result-platforms collection-platforms">@foreach (var platform in game.Platforms) { <span class="result-platform">@platform.Name</span> }</div>
+                            <div class="collection-edit">
+                                <label>Status<select @bind="edit.Status"><option value="Wanted">Want to have</option><option value="Owned">Owned</option></select></label>
+                                <label class="collection-notes">Note<textarea @bind="edit.Notes" maxlength="2000" rows="2" placeholder="Optional note..."></textarea></label>
+                                <button class="primary-button small" @onclick="() => SaveCollectionEdit(game.Id)" disabled="@busy">Save</button>
+                            </div>
+                        </article>
+                    }
+                </div>
+            }
+        </section>
+
+        <footer class="footer"><span>CONSOLE INDEX <span class="footer-muted">· PERSONAL GAME DATABASE</span></span><span>POWERED BY IGDB</span></footer>
+    </main>
+</div>
+
+@code {
+    private IReadOnlyList<PlatformOption> platforms = [];
+    private IReadOnlyList<GameResult> results = [];
+    private IReadOnlyList<CollectionGame> collectionGames = [];
+    private Dictionary<int, CollectionGame> collectionById = [];
+    private Dictionary<int, CollectionEdit> collectionEdits = [];
+    private HashSet<int> includeIds = [48];
+    private HashSet<int> excludeIds = [6];
+    private string clientId = "";
+    private string clientSecret = "";
+    private string includeSearch = "";
+    private string excludeSearch = "";
+    private string collectionSearch = "";
+    private string collectionStatusFilter = "";
+    private string? errorMessage;
+    private string? settingsMessage;
+    private string? collectionMessage;
+    private bool configured;
+    private bool credentialsOpen;
+    private bool busy;
+    private bool hasSearched;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            await LoadCollection();
+            var status = await Api.GetSettingsAsync();
+            configured = status.IsConfigured;
+            clientId = status.ClientId ?? "";
+            if (configured) await LoadPlatforms();
+        }
+        catch (Exception ex) { errorMessage = FriendlyMessage(ex); }
+    }
+
+    private IReadOnlyList<PlatformOption> FilterPlatforms(string filter) => string.IsNullOrWhiteSpace(filter)
+        ? platforms
+        : platforms.Where(p => p.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)
+            || (p.Abbreviation?.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false)).ToArray();
+
+    private IReadOnlyList<PlatformOption> SelectedPlatforms(HashSet<int> ids) => platforms.Where(p => ids.Contains(p.Id)).ToArray();
+
+    private IReadOnlyList<CollectionGame> VisibleCollection => collectionGames
+        .Where(game => string.IsNullOrWhiteSpace(collectionStatusFilter) || game.Status == collectionStatusFilter)
+        .Where(game => string.IsNullOrWhiteSpace(collectionSearch) || game.Name.Contains(collectionSearch, StringComparison.OrdinalIgnoreCase))
+        .ToArray();
+
+    private async Task LoadCollection()
+    {
+        collectionGames = await Api.GetCollectionAsync();
+        collectionById = collectionGames.ToDictionary(game => game.Id);
+        collectionEdits = collectionGames.ToDictionary(game => game.Id, game => new CollectionEdit(game.Status, game.Notes ?? ""));
+    }
+
+    private async Task AddToCollection(GameResult game)
+    {
+        if (collectionById.ContainsKey(game.Id)) return;
+        collectionMessage = null;
+        try
+        {
+            await Api.SaveCollectionGameAsync(new CollectionSaveRequest(game.Id, game.Name, game.Platforms, "Wanted", null));
+            await LoadCollection();
+            collectionMessage = $"{game.Name} added to your collection.";
+        }
+        catch (Exception ex) { collectionMessage = FriendlyMessage(ex); }
+    }
+
+    private async Task SaveCollectionEdit(int id)
+    {
+        if (!collectionById.TryGetValue(id, out var game) || !collectionEdits.TryGetValue(id, out var edit)) return;
+        collectionMessage = null;
+        try
+        {
+            await Api.SaveCollectionGameAsync(new CollectionSaveRequest(game.Id, game.Name, game.Platforms, edit.Status, edit.Notes));
+            await LoadCollection();
+            collectionMessage = $"{game.Name} updated.";
+        }
+        catch (Exception ex) { collectionMessage = FriendlyMessage(ex); }
+    }
+
+    private async Task RemoveFromCollection(int id)
+    {
+        if (!collectionById.TryGetValue(id, out var game)) return;
+        collectionMessage = null;
+        try
+        {
+            await Api.DeleteCollectionGameAsync(id);
+            await LoadCollection();
+            collectionMessage = $"{game.Name} removed from your collection.";
+        }
+        catch (Exception ex) { collectionMessage = FriendlyMessage(ex); }
+    }
+
+    private sealed class CollectionEdit(string status, string notes)
+    {
+        public string Status { get; set; } = status;
+        public string Notes { get; set; } = notes;
+    }
+
+    private void ToggleInclude(int id)
+    {
+        if (!includeIds.Add(id)) includeIds.Remove(id);
+        else excludeIds.Remove(id);
+        errorMessage = null;
+    }
+
+    private void ToggleExclude(int id)
+    {
+        if (!excludeIds.Add(id)) excludeIds.Remove(id);
+        else includeIds.Remove(id);
+        errorMessage = null;
+    }
+
+    private void ToggleCredentials() => credentialsOpen = !credentialsOpen;
+
+    private async Task SaveCredentials()
+    {
+        busy = true; settingsMessage = null; errorMessage = null;
+        try
+        {
+            await Api.SaveSettingsAsync(clientId, clientSecret);
+            configured = true; clientSecret = ""; settingsMessage = "Credentials saved on this device.";
+            await LoadPlatforms();
+        }
+        catch (Exception ex) { settingsMessage = FriendlyMessage(ex); }
+        finally { busy = false; }
+    }
+
+    private async Task ForgetCredentials()
+    {
+        busy = true;
+        try
+        {
+            await Api.DeleteSettingsAsync();
+            configured = false; clientSecret = ""; settingsMessage = "Saved credentials removed.";
+        }
+        catch (Exception ex) { settingsMessage = FriendlyMessage(ex); }
+        finally { busy = false; }
+    }
+
+    private async Task LoadPlatforms()
+    {
+        platforms = await Api.GetPlatformsAsync();
+        includeIds.RemoveWhere(id => platforms.All(p => p.Id != id));
+        excludeIds.RemoveWhere(id => platforms.All(p => p.Id != id));
+    }
+
+    private async Task Search()
+    {
+        if (includeIds.Count == 0) { errorMessage = "Select at least one platform to include."; return; }
+        busy = true; errorMessage = null;
+        try
+        {
+            results = await Api.SearchAsync(new SearchRequest(includeIds.Order().ToArray(), excludeIds.Order().ToArray()));
+            hasSearched = true;
+        }
+        catch (Exception ex) { errorMessage = FriendlyMessage(ex); }
+        finally { busy = false; }
+    }
+
+    private static string FriendlyMessage(Exception ex)
+    {
+        var message = ex.Message;
+        try
+        {
+            using var json = System.Text.Json.JsonDocument.Parse(message);
+            if (json.RootElement.TryGetProperty("detail", out var detail)) return detail.GetString() ?? message;
+            if (json.RootElement.TryGetProperty("message", out var apiMessage)) return apiMessage.GetString() ?? message;
+        }
+        catch (System.Text.Json.JsonException) { }
+        return message;
+    }
+}
