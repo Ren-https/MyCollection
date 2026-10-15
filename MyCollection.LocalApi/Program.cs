@@ -48,40 +48,112 @@ app.MapDelete("/api/settings", (CredentialStore store, IgdbClient igdb) =>
     return Results.NoContent();
 });
 
-app.MapGet("/api/collection", (CollectionStore store) => Results.Ok(store.GetAll()));
+app.MapGet("/api/collections", (CollectionStore store) => Results.Ok(store.GetCollections()));
 
-app.MapPut("/api/collection/{id:int}", (int id, CollectionSaveRequest request, CollectionStore store) =>
+app.MapPost("/api/collections", (CollectionNameRequest request, CollectionStore store) =>
 {
-    if (id <= 0 || request.Id != id)
-        return Results.BadRequest(new { message = "O ID do jogo é inválido." });
-    if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Trim().Length > 300)
-        return Results.BadRequest(new { message = "O título deve ter entre 1 e 300 caracteres." });
-    if (request.Status is not ("Wanted" or "Owned"))
-        return Results.BadRequest(new { message = "Escolha Quero ter ou Tenho." });
-    if (request.Notes?.Length > 2000)
-        return Results.BadRequest(new { message = "A nota pode ter no máximo 2000 caracteres." });
-    if (request.Platforms is null || request.Platforms.Count > 100
-        || request.Platforms.Any(platform => platform.Id <= 0 || string.IsNullOrWhiteSpace(platform.Name)))
-        return Results.BadRequest(new { message = "Os dados de plataforma são inválidos." });
+    var name = request.Name?.Trim();
+    if (string.IsNullOrWhiteSpace(name) || name.Length > 80)
+        return Results.BadRequest(new { message = "O nome da lista deve ter entre 1 e 80 caracteres." });
+    if (store.CollectionNameExists(name))
+        return Results.Conflict(new { message = "Já existe uma lista com esse nome." });
+    var created = store.CreateCollection(name);
+    return Results.Created($"/api/collections/{created.Id}", created);
+});
 
-    var platforms = request.Platforms
-        .GroupBy(platform => platform.Id)
-        .Select(group => group.First())
-        .ToArray();
-    store.Save(new CollectionGame(id, request.Name.Trim(), platforms, request.Status,
-        string.IsNullOrWhiteSpace(request.Notes) ? null : request.Notes.Trim(), DateTimeOffset.UtcNow));
+app.MapPut("/api/collections/{id:int}", (int id, CollectionNameRequest request, CollectionStore store) =>
+{
+    var name = request.Name?.Trim();
+    if (id <= 0) return Results.BadRequest(new { message = "O ID da lista é inválido." });
+    if (string.IsNullOrWhiteSpace(name) || name.Length > 80)
+        return Results.BadRequest(new { message = "O nome da lista deve ter entre 1 e 80 caracteres." });
+    if (!store.CollectionExists(id)) return Results.NotFound();
+    if (store.CollectionNameExists(name, id))
+        return Results.Conflict(new { message = "Já existe uma lista com esse nome." });
+    store.RenameCollection(id, name);
     return Results.NoContent();
 });
 
-app.MapDelete("/api/collection/{id:int}", (int id, CollectionStore store) =>
-    id <= 0 ? Results.BadRequest(new { message = "O ID do jogo é inválido." })
-        : store.Delete(id) ? Results.NoContent() : Results.NotFound());
+app.MapDelete("/api/collections/{id:int}", (int id, CollectionStore store) =>
+{
+    if (id <= 0) return Results.BadRequest(new { message = "O ID da lista é inválido." });
+    return store.DeleteCollection(id) switch
+    {
+        CollectionDeleteResult.Deleted => Results.NoContent(),
+        CollectionDeleteResult.LastCollection => Results.Conflict(new { message = "Mantenha pelo menos uma lista." }),
+        _ => Results.NotFound()
+    };
+});
+
+app.MapGet("/api/collections/{collectionId:int}/games", (int collectionId, CollectionStore store) =>
+    store.CollectionExists(collectionId) ? Results.Ok(store.GetGames(collectionId)) : Results.NotFound());
+
+app.MapPut("/api/collections/{collectionId:int}/games/{gameId:int}",
+    (int collectionId, int gameId, CollectionSaveRequest request, CollectionStore store) =>
+    {
+        if (!store.CollectionExists(collectionId)) return Results.NotFound();
+        var error = ValidateCollectionGame(gameId, request);
+        if (error is not null) return Results.BadRequest(new { message = error });
+        store.AddGameToCollection(collectionId, NormalizeCollectionGame(request));
+        return Results.NoContent();
+    });
+
+app.MapPut("/api/games/{id:int}", (int id, CollectionSaveRequest request, CollectionStore store) =>
+{
+    var error = ValidateCollectionGame(id, request);
+    if (error is not null) return Results.BadRequest(new { message = error });
+    return store.UpdateGame(NormalizeCollectionGame(request)) ? Results.NoContent() : Results.NotFound();
+});
+
+app.MapDelete("/api/collections/{collectionId:int}/games/{gameId:int}",
+    (int collectionId, int gameId, CollectionStore store) =>
+    {
+        if (!store.CollectionExists(collectionId)) return Results.NotFound();
+        return store.RemoveMembership(collectionId, gameId) ? Results.NoContent() : Results.NotFound();
+    });
+
+app.MapGet("/api/collections/{collectionId:int}/export", (int collectionId, CollectionStore store) =>
+{
+    if (!store.CollectionExists(collectionId)) return Results.NotFound();
+    var csv = CollectionCsvExporter.Export(store.GetGames(collectionId));
+    return Results.File(csv, "text/csv; charset=utf-8", $"collection-{collectionId}.csv");
+});
+
+static string? ValidateCollectionGame(int id, CollectionSaveRequest request)
+{
+    if (id <= 0 || request.Id != id) return "O ID do jogo é inválido.";
+    if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Trim().Length > 300)
+        return "O título deve ter entre 1 e 300 caracteres.";
+    if (request.Status is not ("Wanted" or "Owned")) return "Escolha Quero ter ou Tenho.";
+    if (request.Notes?.Length > 2000) return "A nota pode ter no máximo 2000 caracteres.";
+    if (request.Platforms is null || request.Platforms.Count > 100
+                                  || request.Platforms.Any(platform =>
+                                      platform.Id <= 0 || string.IsNullOrWhiteSpace(platform.Name)))
+        return "Os dados de plataforma são inválidos.";
+    return null;
+}
+
+static CollectionSaveRequest NormalizeCollectionGame(CollectionSaveRequest request) => request with
+{
+    Name = request.Name.Trim(),
+    Platforms = request.Platforms.GroupBy(platform => platform.Id).Select(group => group.First()).ToArray(),
+    Notes = string.IsNullOrWhiteSpace(request.Notes) ? null : request.Notes.Trim()
+};
 
 app.MapGet("/api/platforms", async (IgdbClient igdb, CancellationToken cancellationToken) =>
 {
-    try { return Results.Ok(await igdb.GetPlatformsAsync(cancellationToken)); }
-    catch (InvalidOperationException ex) { return Results.Problem(ex.Message, statusCode: 400); }
-    catch (HttpRequestException ex) { return Results.Problem($"Falha ao consultar o IGDB: {ex.Message}", statusCode: 502); }
+    try
+    {
+        return Results.Ok(await igdb.GetPlatformsAsync(cancellationToken));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Problem(ex.Message, statusCode: 400);
+    }
+    catch (HttpRequestException ex)
+    {
+        return Results.Problem($"Falha ao consultar o IGDB: {ex.Message}", statusCode: 502);
+    }
 });
 
 app.MapPost("/api/search", async (SearchRequest request, IgdbClient igdb, CancellationToken cancellationToken) =>
@@ -91,11 +163,21 @@ app.MapPost("/api/search", async (SearchRequest request, IgdbClient igdb, Cancel
 
     var included = request.IncludePlatformIds.ToHashSet();
     if (included.Overlaps(request.ExcludePlatformIds))
-        return Results.BadRequest(new { message = "Uma plataforma não pode estar incluída e excluída ao mesmo tempo." });
+        return Results.BadRequest(new
+            { message = "Uma plataforma não pode estar incluída e excluída ao mesmo tempo." });
 
-    try { return Results.Ok(await igdb.SearchAsync(request, cancellationToken)); }
-    catch (InvalidOperationException ex) { return Results.Problem(ex.Message, statusCode: 400); }
-    catch (HttpRequestException ex) { return Results.Problem($"Falha ao consultar o IGDB: {ex.Message}", statusCode: 502); }
+    try
+    {
+        return Results.Ok(await igdb.SearchAsync(request, cancellationToken));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Problem(ex.Message, statusCode: 400);
+    }
+    catch (HttpRequestException ex)
+    {
+        return Results.Problem($"Falha ao consultar o IGDB: {ex.Message}", statusCode: 502);
+    }
 });
 
 app.MapFallbackToFile("index.html");
@@ -121,7 +203,8 @@ sealed class CredentialStore(string folder, string fileName, IDataProtectionProv
             }
             catch (Exception ex) when (ex is JsonException or System.Security.Cryptography.CryptographicException)
             {
-                throw new InvalidOperationException("Não foi possível ler as credenciais locais. Remova e configure-as novamente.", ex);
+                throw new InvalidOperationException(
+                    "Não foi possível ler as credenciais locais. Remova e configure-as novamente.", ex);
             }
         }
     }
@@ -137,7 +220,9 @@ sealed class CredentialStore(string folder, string fileName, IDataProtectionProv
 
     public void Delete()
     {
-        lock (_sync) if (File.Exists(_filePath)) File.Delete(_filePath);
+        lock (_sync)
+            if (File.Exists(_filePath))
+                File.Delete(_filePath);
     }
 }
 
@@ -158,7 +243,8 @@ sealed class IgdbClient(CredentialStore credentials, IHttpClientFactory httpFact
     public async Task<IReadOnlyList<PlatformOption>> GetPlatformsAsync(CancellationToken cancellationToken)
     {
         if (_platformCache is not null) return _platformCache;
-        var json = await QueryAsync("platforms", "fields id, name, abbreviation; sort name asc; limit 500;", cancellationToken);
+        var json = await QueryAsync("platforms", "fields id, name, abbreviation; sort name asc; limit 500;",
+            cancellationToken);
         using var document = JsonDocument.Parse(json);
         _platformCache = document.RootElement.EnumerateArray().Select(item => new PlatformOption(
             item.GetProperty("id").GetInt32(),
@@ -171,7 +257,8 @@ sealed class IgdbClient(CredentialStore credentials, IHttpClientFactory httpFact
     {
         var include = request.IncludePlatformIds.Where(id => id > 0).Distinct().Order().ToArray();
         var exclude = request.ExcludePlatformIds.Where(id => id > 0).Distinct().Order().ToArray();
-        if (include.Length == 0) throw new InvalidOperationException("Selecione pelo menos uma plataforma para incluir.");
+        if (include.Length == 0)
+            throw new InvalidOperationException("Selecione pelo menos uma plataforma para incluir.");
 
         var clauses = new List<string>();
         clauses.Add(include.Length == 1
@@ -181,7 +268,8 @@ sealed class IgdbClient(CredentialStore credentials, IHttpClientFactory httpFact
         clauses.Add("category = 0");
         clauses.Add("version_parent = null");
 
-        var query = $"fields id, name, platforms.id, platforms.name; where {string.Join(" & ", clauses)}; sort name asc; limit 500;";
+        var query =
+            $"fields id, name, platforms.id, platforms.name; where {string.Join(" & ", clauses)}; sort name asc; limit 500;";
         var json = await QueryAsync("games", query, cancellationToken);
         using var document = JsonDocument.Parse(json);
         return document.RootElement.EnumerateArray().Select(item =>
@@ -191,14 +279,16 @@ sealed class IgdbClient(CredentialStore credentials, IHttpClientFactory httpFact
                     platform.GetProperty("id").GetInt32(),
                     platform.TryGetProperty("name", out var pn) ? pn.GetString() ?? "" : "")).ToArray()
                 : [];
-            return new GameResult(item.GetProperty("id").GetInt32(), item.GetProperty("name").GetString() ?? "", platforms);
+            return new GameResult(item.GetProperty("id").GetInt32(), item.GetProperty("name").GetString() ?? "",
+                platforms);
         }).ToArray();
     }
 
     private async Task<string> QueryAsync(string endpoint, string query, CancellationToken cancellationToken)
     {
         var token = await GetTokenAsync(cancellationToken);
-        var (clientId, _) = credentials.Read() ?? throw new InvalidOperationException("Configure as credenciais da Twitch primeiro.");
+        var (clientId, _) = credentials.Read() ??
+                            throw new InvalidOperationException("Configure as credenciais da Twitch primeiro.");
         using var request = new HttpRequestMessage(HttpMethod.Post, $"https://api.igdb.com/v4/{endpoint}");
         request.Headers.Add("Client-ID", clientId);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -218,7 +308,8 @@ sealed class IgdbClient(CredentialStore credentials, IHttpClientFactory httpFact
         {
             if (_accessToken is not null && _tokenExpiresAt > DateTimeOffset.UtcNow.AddMinutes(2)) return _accessToken;
             var (clientId, clientSecret) = credentials.Read()
-                ?? throw new InvalidOperationException("Configure as credenciais da Twitch primeiro.");
+                                           ?? throw new InvalidOperationException(
+                                               "Configure as credenciais da Twitch primeiro.");
             using var response = await httpFactory.CreateClient().PostAsync(
                 "https://id.twitch.tv/oauth2/token",
                 new FormUrlEncodedContent(new Dictionary<string, string>
@@ -232,10 +323,13 @@ sealed class IgdbClient(CredentialStore credentials, IHttpClientFactory httpFact
                 throw new HttpRequestException($"Twitch retornou {(int)response.StatusCode}: {body}");
             using var json = JsonDocument.Parse(body);
             _accessToken = json.RootElement.GetProperty("access_token").GetString()
-                ?? throw new InvalidOperationException("A Twitch não retornou um access token.");
+                           ?? throw new InvalidOperationException("A Twitch não retornou um access token.");
             _tokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(json.RootElement.GetProperty("expires_in").GetInt32());
             return _accessToken;
         }
-        finally { _tokenLock.Release(); }
+        finally
+        {
+            _tokenLock.Release();
+        }
     }
 }

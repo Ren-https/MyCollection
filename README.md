@@ -25,6 +25,8 @@ The host listens only on the loopback interface. It serves the WASM app and make
 
 The IGDB account and Twitch app credentials belong to each person running the app. No shared public API or project-owned credentials are required.
 
-## Personal collection
+## Personal collections
 
-Search results can be added to the local collection and tracked as **Want to have** or **Owned**, with an optional note. The collection can be searched and filtered by status, and remains available when IGDB is offline. Its SQLite database is stored under the current user's local application data in `GameConsoleCollector/collection.sqlite3`; it is not uploaded or synchronized.
+Search results can be added to named local lists such as a console collection, **Digital**, or **No access**. A game can appear in more than one list; its **Want to have** or **Owned** status and optional note are shared across those lists. Lists can be created, renamed, searched, filtered by status, and exported individually as UTF-8 CSV files.
+
+On the first start after this update, the existing collection is migrated to a default list named **My collection**, preserving saved games, statuses, and notes. The SQLite database remains under the current user's local application data in `GameConsoleCollector/collection.sqlite3`; it is not uploaded or synchronized.

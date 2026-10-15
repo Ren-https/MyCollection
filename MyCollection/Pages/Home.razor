@@ -132,7 +132,7 @@
                     @foreach (var game in results)
                     {
                         var alreadySaved = collectionById.ContainsKey(game.Id);
-                        <tr><td class="game-title">@game.Name</td><td><div class="result-platforms">@foreach (var platform in game.Platforms) { <span class="result-platform">@platform.Name</span> }</div></td><td class="game-id">@game.Id</td><td><button class="collection-action" @onclick="() => AddToCollection(game)" disabled="@(alreadySaved || busy)">@(alreadySaved ? "In collection" : "＋ Add")</button></td></tr>
+                        <tr><td class="game-title">@game.Name</td><td><div class="result-platforms">@foreach (var platform in game.Platforms) { <span class="result-platform">@platform.Name</span> }</div></td><td class="game-id">@game.Id</td><td><button class="collection-action" @onclick="() => AddToCollection(game)" disabled="@(alreadySaved || busy || selectedCollectionId == 0)">@(alreadySaved ? "In this list" : "＋ Add")</button></td></tr>
                     }
                 </tbody></table></div>
             }
@@ -141,9 +141,41 @@
 
         <section class="collection-section">
             <div class="results-header">
-                <div><div class="eyebrow">YOUR LOCAL LIBRARY</div><h2>My collection <span class="results-count">@collectionGames.Count</span></h2></div>
+                <div><div class="eyebrow">YOUR LOCAL LIBRARY</div><h2>@(SelectedCollection?.Name ?? "Your lists") <span class="results-count">@collectionGames.Count</span></h2></div>
                 <span class="results-meta">SAVED ON THIS COMPUTER</span>
             </div>
+            <div class="collection-manager">
+                <label class="collection-select-label" for="collection-select">LIST</label>
+                <select id="collection-select" class="collection-filter" value="@selectedCollectionId" @onchange="OnCollectionSelected" aria-label="Select collection">
+                    @foreach (var collection in collections)
+                    {
+                        <option value="@collection.Id">@collection.Name (@collection.GameCount)</option>
+                    }
+                </select>
+                <div class="collection-manager-actions">
+                    <button class="collection-tool-button" @onclick="StartCreatingCollection" disabled="@busy">New list</button>
+                    <button class="collection-tool-button" @onclick="StartRenamingCollection" disabled="@(busy || SelectedCollection is null)">Rename</button>
+                    <button class="collection-tool-button danger-text" @onclick="StartDeletingCollection" disabled="@(busy || !CanDeleteCollection)">Delete</button>
+                    <a class="collection-tool-button export-link" href="@CollectionExportUrl" aria-disabled="@(selectedCollectionId == 0 ? "true" : "false")">Export CSV</a>
+                </div>
+            </div>
+            @if (collectionEditorOpen)
+            {
+                <div class="collection-editor">
+                    <label for="collection-name">@(editingCollectionName ? "Rename list" : "New list")</label>
+                    <input id="collection-name" @bind="collectionNameDraft" maxlength="80" placeholder="e.g. PS5, Digital, No access" />
+                    <button class="primary-button small" @onclick="SaveCollectionName" disabled="@busy">Save list</button>
+                    <button class="collection-tool-button" @onclick="CancelCollectionEditor" disabled="@busy">Cancel</button>
+                </div>
+            }
+            @if (deleteConfirmationOpen && SelectedCollection is not null)
+            {
+                <div class="collection-delete-confirmation" role="alert">
+                    <span>Delete “@SelectedCollection.Name”? Games that are not in another list will also be removed.</span>
+                    <button class="collection-tool-button danger-text" @onclick="DeleteCurrentCollection" disabled="@busy">Delete list</button>
+                    <button class="collection-tool-button" @onclick="() => deleteConfirmationOpen = false" disabled="@busy">Cancel</button>
+                </div>
+            }
             <div class="collection-toolbar">
                 <input class="collection-search" @bind="collectionSearch" placeholder="Find a saved game..." aria-label="Search your collection" />
                 <select class="collection-filter" @bind="collectionStatusFilter" aria-label="Filter collection by status">
@@ -153,7 +185,7 @@
             @if (!string.IsNullOrWhiteSpace(collectionMessage)) { <div class="collection-message">@collectionMessage</div> }
             @if (VisibleCollection.Count == 0)
             {
-                <div class="empty-results collection-empty"><div class="empty-art">◎</div><strong>@(collectionGames.Count == 0 ? "Your collection is empty" : "No games match this filter")</strong><span>Add games from your search results to start your personal list.</span></div>
+                <div class="empty-results collection-empty"><div class="empty-art">◎</div><strong>@(collectionGames.Count == 0 ? "This list is empty" : "No games match this filter")</strong><span>Add games from your search results to start this list.</span></div>
             }
             else
             {
@@ -162,7 +194,7 @@
                     {
                         var edit = collectionEdits[game.Id];
                         <article class="collection-card">
-                            <div class="collection-card-title"><div><h3>@game.Name</h3><span class="game-id">IGDB @game.Id · Added @game.AddedAt.ToLocalTime().ToString("d")</span></div><button class="text-button danger-text" @onclick="() => RemoveFromCollection(game.Id)" disabled="@busy">Remove</button></div>
+                            <div class="collection-card-title"><div><h3>@game.Name</h3><span class="game-id">IGDB @game.Id · Added @game.AddedAt.ToLocalTime().ToString("d")</span></div><button class="text-button danger-text" @onclick="() => RemoveFromCollection(game.Id)" disabled="@busy">Remove from list</button></div>
                             <div class="result-platforms collection-platforms">@foreach (var platform in game.Platforms) { <span class="result-platform">@platform.Name</span> }</div>
                             <div class="collection-edit">
                                 <label>Status<select @bind="edit.Status"><option value="Wanted">Want to have</option><option value="Owned">Owned</option></select></label>
@@ -178,177 +210,3 @@
         <footer class="footer"><span>CONSOLE INDEX <span class="footer-muted">· PERSONAL GAME DATABASE</span></span><span>POWERED BY IGDB</span></footer>
     </main>
 </div>
-
-@code {
-    private IReadOnlyList<PlatformOption> platforms = [];
-    private IReadOnlyList<GameResult> results = [];
-    private IReadOnlyList<CollectionGame> collectionGames = [];
-    private Dictionary<int, CollectionGame> collectionById = [];
-    private Dictionary<int, CollectionEdit> collectionEdits = [];
-    private HashSet<int> includeIds = [48];
-    private HashSet<int> excludeIds = [6];
-    private string clientId = "";
-    private string clientSecret = "";
-    private string includeSearch = "";
-    private string excludeSearch = "";
-    private string collectionSearch = "";
-    private string collectionStatusFilter = "";
-    private string? errorMessage;
-    private string? settingsMessage;
-    private string? collectionMessage;
-    private bool configured;
-    private bool credentialsOpen;
-    private bool busy;
-    private bool hasSearched;
-
-    protected override async Task OnInitializedAsync()
-    {
-        try
-        {
-            await LoadCollection();
-            var status = await Api.GetSettingsAsync();
-            configured = status.IsConfigured;
-            clientId = status.ClientId ?? "";
-            if (configured) await LoadPlatforms();
-        }
-        catch (Exception ex) { errorMessage = FriendlyMessage(ex); }
-    }
-
-    private IReadOnlyList<PlatformOption> FilterPlatforms(string filter) => string.IsNullOrWhiteSpace(filter)
-        ? platforms
-        : platforms.Where(p => p.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)
-            || (p.Abbreviation?.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false)).ToArray();
-
-    private IReadOnlyList<PlatformOption> SelectedPlatforms(HashSet<int> ids) => platforms.Where(p => ids.Contains(p.Id)).ToArray();
-
-    private IReadOnlyList<CollectionGame> VisibleCollection => collectionGames
-        .Where(game => string.IsNullOrWhiteSpace(collectionStatusFilter) || game.Status == collectionStatusFilter)
-        .Where(game => string.IsNullOrWhiteSpace(collectionSearch) || game.Name.Contains(collectionSearch, StringComparison.OrdinalIgnoreCase))
-        .ToArray();
-
-    private async Task LoadCollection()
-    {
-        collectionGames = await Api.GetCollectionAsync();
-        collectionById = collectionGames.ToDictionary(game => game.Id);
-        collectionEdits = collectionGames.ToDictionary(game => game.Id, game => new CollectionEdit(game.Status, game.Notes ?? ""));
-    }
-
-    private async Task AddToCollection(GameResult game)
-    {
-        if (collectionById.ContainsKey(game.Id)) return;
-        collectionMessage = null;
-        try
-        {
-            await Api.SaveCollectionGameAsync(new CollectionSaveRequest(game.Id, game.Name, game.Platforms, "Wanted", null));
-            await LoadCollection();
-            collectionMessage = $"{game.Name} added to your collection.";
-        }
-        catch (Exception ex) { collectionMessage = FriendlyMessage(ex); }
-    }
-
-    private async Task SaveCollectionEdit(int id)
-    {
-        if (!collectionById.TryGetValue(id, out var game) || !collectionEdits.TryGetValue(id, out var edit)) return;
-        collectionMessage = null;
-        try
-        {
-            await Api.SaveCollectionGameAsync(new CollectionSaveRequest(game.Id, game.Name, game.Platforms, edit.Status, edit.Notes));
-            await LoadCollection();
-            collectionMessage = $"{game.Name} updated.";
-        }
-        catch (Exception ex) { collectionMessage = FriendlyMessage(ex); }
-    }
-
-    private async Task RemoveFromCollection(int id)
-    {
-        if (!collectionById.TryGetValue(id, out var game)) return;
-        collectionMessage = null;
-        try
-        {
-            await Api.DeleteCollectionGameAsync(id);
-            await LoadCollection();
-            collectionMessage = $"{game.Name} removed from your collection.";
-        }
-        catch (Exception ex) { collectionMessage = FriendlyMessage(ex); }
-    }
-
-    private sealed class CollectionEdit(string status, string notes)
-    {
-        public string Status { get; set; } = status;
-        public string Notes { get; set; } = notes;
-    }
-
-    private void ToggleInclude(int id)
-    {
-        if (!includeIds.Add(id)) includeIds.Remove(id);
-        else excludeIds.Remove(id);
-        errorMessage = null;
-    }
-
-    private void ToggleExclude(int id)
-    {
-        if (!excludeIds.Add(id)) excludeIds.Remove(id);
-        else includeIds.Remove(id);
-        errorMessage = null;
-    }
-
-    private void ToggleCredentials() => credentialsOpen = !credentialsOpen;
-
-    private async Task SaveCredentials()
-    {
-        busy = true; settingsMessage = null; errorMessage = null;
-        try
-        {
-            await Api.SaveSettingsAsync(clientId, clientSecret);
-            configured = true; clientSecret = ""; settingsMessage = "Credentials saved on this device.";
-            await LoadPlatforms();
-        }
-        catch (Exception ex) { settingsMessage = FriendlyMessage(ex); }
-        finally { busy = false; }
-    }
-
-    private async Task ForgetCredentials()
-    {
-        busy = true;
-        try
-        {
-            await Api.DeleteSettingsAsync();
-            configured = false; clientSecret = ""; settingsMessage = "Saved credentials removed.";
-        }
-        catch (Exception ex) { settingsMessage = FriendlyMessage(ex); }
-        finally { busy = false; }
-    }
-
-    private async Task LoadPlatforms()
-    {
-        platforms = await Api.GetPlatformsAsync();
-        includeIds.RemoveWhere(id => platforms.All(p => p.Id != id));
-        excludeIds.RemoveWhere(id => platforms.All(p => p.Id != id));
-    }
-
-    private async Task Search()
-    {
-        if (includeIds.Count == 0) { errorMessage = "Select at least one platform to include."; return; }
-        busy = true; errorMessage = null;
-        try
-        {
-            results = await Api.SearchAsync(new SearchRequest(includeIds.Order().ToArray(), excludeIds.Order().ToArray()));
-            hasSearched = true;
-        }
-        catch (Exception ex) { errorMessage = FriendlyMessage(ex); }
-        finally { busy = false; }
-    }
-
-    private static string FriendlyMessage(Exception ex)
-    {
-        var message = ex.Message;
-        try
-        {
-            using var json = System.Text.Json.JsonDocument.Parse(message);
-            if (json.RootElement.TryGetProperty("detail", out var detail)) return detail.GetString() ?? message;
-            if (json.RootElement.TryGetProperty("message", out var apiMessage)) return apiMessage.GetString() ?? message;
-        }
-        catch (System.Text.Json.JsonException) { }
-        return message;
-    }
-}
